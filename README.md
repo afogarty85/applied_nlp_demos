@@ -26,3 +26,5 @@ This repository contains start-to-finish data processing and NLP algorithms usin
 
 
 Credits: The [Hedwig](https://github.com/castorini/hedwig) group has been instrumental in helping me learn many of these models.
+
+Nicer-looking R Markdown outputs can be found here: http://seekinginference.com/NLP/
