@@ -24,6 +24,7 @@ This repository contains start-to-finish data processing and NLP algorithms usin
 
 11. [Paper: Heinsein Routing](https://arxiv.org/abs/1911.00792)  TorchText Implementation: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/BERT_capsule.py)
 
+12. Entity Embeddings and Lazy Loading. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/torch_dataset.py)
 
 Credits: The [Hedwig](https://github.com/castorini/hedwig) group has been instrumental in helping me learn many of these models.
 
