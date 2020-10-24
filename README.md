@@ -26,6 +26,8 @@ This repository contains start-to-finish data processing and NLP algorithms usin
 
 12. Entity Embeddings and Lazy Loading. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/torch_dataset.py)
 
+13. Semantic Similarity. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/semantic_sim.py)
+
 Credits: The [Hedwig](https://github.com/castorini/hedwig) group has been instrumental in helping me learn many of these models.
 
 Nicer-looking R Markdown outputs can be found here: http://seekinginference.com/NLP/
