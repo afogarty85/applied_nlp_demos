@@ -1,3 +1,5 @@
+# we can use collate_fn to dynamically pad our tokens in the data loader
+
 def collate_fn_padd(batch):
     batch_inputs = list()
     max_size = 0
