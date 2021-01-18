@@ -226,7 +226,7 @@ def train(dataloader):
         optimizer.zero_grad()
         with autocast():
             logits = model(input_ids=batch['features'].squeeze(1), attention_mask=batch['attn_mask'].squeeze(1))
-            loss = F.cross_entropy(logits, batch['target'])
+            loss = F.cross_entropy(logits.view(-1, 2), batch['target'].view(-1))
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -247,7 +247,7 @@ def test(dataloader):
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             logits = model(input_ids=batch['features'].squeeze(1), attention_mask=batch['attn_mask'].squeeze(1))
-            loss = F.cross_entropy(logits, batch['target'])
+            loss = F.cross_entropy(logits.view(-1, 2), batch['target'].view(-1))
             pred = logits.argmax(dim=1, keepdim=True)
             correct = pred.eq(batch['target'].view_as(pred)).sum().item()
             f1 = f1_score(pred.to("cpu").numpy(), batch['target'].to("cpu").numpy(), average='macro')
