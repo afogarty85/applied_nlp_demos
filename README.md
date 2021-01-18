@@ -28,7 +28,7 @@ This repository contains start-to-finish data processing and NLP algorithms usin
 
 13. Semantic Similarity. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/semantic_sim.py)
 
-14. SQUaD 2.0 BERT Embeddings Emissions in PyTorch. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/squad_embeds.py)
+14. SQuAD 2.0 BERT Embeddings Emissions in PyTorch. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/squad_embeds.py)
 
 15. SST-5 BERT Embeddings Emissions in PyTorch. Code: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/sst_embeds.py)
 
