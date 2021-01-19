@@ -21,7 +21,7 @@ import collections
 
 
 # prepare torch data set
-class SquadDS():
+class SquadDS(torch.utils.data.Dataset):
     '''
     This prepares the official Squad v2.0 JSON data
     (https://rajpurkar.github.io/SQuAD-explorer/) for traininig
