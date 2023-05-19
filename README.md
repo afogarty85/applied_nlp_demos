@@ -1,5 +1,61 @@
 # applied_nlp_demos in PyTorch
 
+
+# Modern NLP
+
+1. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
+
+
+## Sample Results
+
+```
+# google/flan-t5-large
+input sentence: Given a set of numbers, find the maximum value.
+{10, 3, 25, 6, 16}
+response: 25
+
+input sentence: Convert from celsius to fahrenheit.
+Temperature in Celsius: 15
+response: Fahrenheit
+
+input sentence: Arrange the given numbers in ascending order.
+2, 4, 0, 8, 3
+response: 0, 3, 4, 8
+
+input sentence: What is the capital of France?
+response: paris
+
+input sentence: Name two types of desert biomes.
+response: sahara
+
+# alpaca fine-tuned
+input sentence: Given a set of numbers, find the maximum value.
+{10, 3, 25, 6, 16}
+response: 25
+
+input sentence: Convert from celsius to fahrenheit.
+Temperature in Celsius: 15
+response: 77
+
+input sentence: Arrange the given numbers in ascending order.
+2, 4, 0, 8, 3
+response: 0, 2, 3, 4, 8
+
+input sentence: What is the capital of France?
+response: Paris
+
+input sentence: Name two types of desert biomes.
+response: Desert biomes can be divided into two main types: arid and semi-arid. Arid deserts are characterized by high levels of deforestation, sparse vegetation, and limited water availability. Semi-desert deserts, on the other hand, are relatively dry deserts with little to no vegetation.
+
+
+```
+
+
+
+
+
+# Legacy NLP
+
 This repository contains start-to-finish data processing and NLP algorithms using PyTorch and often HuggingFace (Transformers) for the following models:
 
 1. [Paper: Hierarchical Attention Networks](https://www.cs.cmu.edu/~hovy/papers/16HLT-hierarchical-attention-networks.pdf)  PyTorch Implementation: [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/HAN.py)
