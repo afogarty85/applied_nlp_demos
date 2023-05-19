@@ -4,7 +4,7 @@ import math
 import torch
 import os
 import evaluate
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, PreTrainedTokenizer, BatchEncoding, AutoTokenizer, AutoConfig
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BatchEncoding, AutoTokenizer
 from transformers.optimization import Adafactor, AdafactorSchedule, get_scheduler, SchedulerType
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
@@ -15,7 +15,7 @@ from argparse import ArgumentParser
 from datasets import Dataset
 from deepspeed.ops.adam import FusedAdam
 torch.backends.cuda.matmul.allow_tf32 = True
-torch.seed(0)
+torch.manual_seed(0)
 
 
 # accelerate launch \
@@ -25,21 +25,22 @@ torch.seed(0)
 # --gradient_clipping 1 \
 # --num_cpu_threads_per_process 16 \
 # accelerate_t5.py \
+# --model_name_or_path google/flan-t5-small \
 # --mixed_precision bf16 \
 # --gradient_accumulation_steps 1 \
-# --per_device_train_batch_size 32 \
-# --per_device_eval_batch_size 32 \
+# --per_device_train_batch_size 128 \
+# --per_device_eval_batch_size 128 \
 # --num_train_epochs 4 \
 # --logging_steps 500 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_alpaca \
+# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
 # --learning_rate 4e-4 \
 # --weight_decay 0.01 \
 # --checkpointing_steps epoch \
 # --max_source_len 64 \
 # --max_target_len 512 \
-# --eval False \
-# --project_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_alpaca \
+# --eval True \
 # --token_calc True
+
 
 
 class Seq2SeqDataset(torch.utils.data.Dataset):
@@ -109,8 +110,8 @@ class Seq2SeqDataset(torch.utils.data.Dataset):
         ds = Dataset.from_pandas(df)
 
         # tokenize data set
-        text_ds = ds.map(tokenize_text, batched=True)
-        label_ds = ds.map(tokenize_label, batched=True)
+        text_ds = ds.map(tokenize_text, batched=True, num_proc=4)
+        label_ds = ds.map(tokenize_label, batched=True, num_proc=4)
 
         # generate statistics
         info = dict(total_samples=len(df),
@@ -198,7 +199,6 @@ def parse_args():
     )
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
-    parser.add_argument("--project_dir", type=str, default=None, help="Where the project will reside.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument(
         "--max_train_steps",
@@ -236,6 +236,12 @@ def parse_args():
         default=None,
         help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
     )
+    parser.add_argument(
+        "--model_name_or_path",
+        type=str,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        required=False,
+    )    
     parser.add_argument(
         "--learning_rate",
         type=float,
@@ -285,15 +291,15 @@ def postprocess_text(preds, labels):
 
 
 def eval(args, ds, device, model, metric, tokenizer, eval_loader, accelerator):
+    '''
+    Evaluate function with bleu
+    '''
 
     # place in eval
     model.eval()
 
-    if args.val_max_target_len is None:
-        args.val_max_target_len = args.max_target_len
-
     gen_kwargs = {
-    "max_length": args.val_max_target_len if args is not None else ds.max_target_len,
+    "max_length": args.val_max_target_len if args.val_max_target_len is not None else ds.max_target_len,
     "num_beams": 10,
     "min_length": 10,
     "length_penalty": False,
@@ -354,7 +360,7 @@ def main():
     args = parse_args()
 
     # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large", use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=False)
 
     # build ds 
     # '/mnt/c/Users/afogarty/Desktop/ML/SES/alpaca_clean_to_pq.parquet'
@@ -365,11 +371,12 @@ def main():
                     max_target_len=args.max_target_len,
                     text_col='text',
                     label_col='label'
-                    )
+                    )    
     
     # update token lengths
     if args.token_calc:
         myds.__tokenstats__()
+
 
     def collate_fn(examples):
         '''
@@ -395,7 +402,7 @@ def main():
 
 
     # define project
-    my_proj = ProjectConfiguration(project_dir=args.project_dir,
+    my_proj = ProjectConfiguration(project_dir=args.output_dir,
                                    automatic_checkpoint_naming=True,
                                    total_limit=5,)
     
@@ -410,6 +417,7 @@ def main():
     train_size = int(0.99 * len(myds))
     valid_test_size = len(myds) - train_size
     valid_size = int(valid_test_size * 0.5)
+    test_size = int(valid_test_size * 0.5)
 
     # subset
     train_set, valid_set,  = torch.utils.data.random_split(myds, [train_size, valid_test_size,])
@@ -420,18 +428,20 @@ def main():
                                                drop_last=True,
                                                shuffle=True,
                                                num_workers=6,
-                                               collate_fn=collate_fn)
+                                               collate_fn=collate_fn,
+                                               pin_memory=True)
     
     eval_loader = torch.utils.data.DataLoader(valid_set,
                                               batch_size=args.per_device_eval_batch_size,
                                               num_workers=6,
-                                              collate_fn=collate_fn)
+                                              collate_fn=collate_fn,
+                                              pin_memory=True)
 
     # warm steps
     args.num_warmup_steps = int(0.06 * (len(train_set) // args.per_device_train_batch_size) * args.num_train_epochs)
 
     # init model
-    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-large",
+    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
                                                             torch_dtype='auto',
                                                             device_map='auto',
                                                             )
@@ -543,8 +553,8 @@ def main():
             # checkpoint
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
-                    print(args.project_dir + '/checkpoints')
-                    os.makedirs(args.project_dir + '/checkpoints', exist_ok=True)
+                    print(args.output_dir + '/checkpoints')
+                    os.makedirs(args.output_dir + '/checkpoints', exist_ok=True)
                     accelerator.save_state()
 
             # report data so far
