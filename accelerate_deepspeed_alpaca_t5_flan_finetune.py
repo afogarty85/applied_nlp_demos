@@ -15,6 +15,7 @@ from argparse import ArgumentParser
 from datasets import Dataset
 from deepspeed.ops.adam import FusedAdam
 torch.backends.cuda.matmul.allow_tf32 = True
+torch.seed(0)
 
 
 # accelerate launch \
@@ -224,6 +225,12 @@ def parse_args():
         help="log every n steps",
     )
     parser.add_argument(
+        "--val_max_target_len",
+        type=int,
+        default=None,
+        help="val max target length for predictions",
+    )    
+    parser.add_argument(
         "--checkpointing_steps",
         type=str,
         default=None,
@@ -277,6 +284,70 @@ def postprocess_text(preds, labels):
     return preds, labels
 
 
+def eval(args, ds, device, model, metric, tokenizer, eval_loader, accelerator):
+
+    # place in eval
+    model.eval()
+
+    if args.val_max_target_len is None:
+        args.val_max_target_len = args.max_target_len
+
+    gen_kwargs = {
+    "max_length": args.val_max_target_len if args is not None else ds.max_target_len,
+    "num_beams": 10,
+    "min_length": 10,
+    "length_penalty": False,
+    "no_repeat_ngram_size": 0,
+    "encoder_no_repeat_ngram_size": 0,
+    "repetition_penalty": 1.2,
+    }
+
+    print(f"Using these text generating args: {gen_kwargs}")
+
+    for step, batch in enumerate(eval_loader):
+
+        with torch.no_grad():
+            # unpack
+            data = {k: v.to(device) for k, v in batch.items()}
+
+            # generate predictions
+            generated_tokens = accelerator.unwrap_model(model).generate(input_ids=data["source_ids"],
+                                            attention_mask=data["source_mask"],
+                                            **gen_kwargs
+                                            )
+            
+            # unpack labels
+            labels = data["target_ids"]
+
+            # set preds and labels to cpu
+            generated_tokens, labels = accelerator.gather((generated_tokens, labels))
+            generated_tokens = generated_tokens.cpu().numpy()
+            labels = labels.cpu().numpy()
+
+            # Replace -100 in the labels as we can't decode them; not needed in this case
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+
+            # decode
+            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+            decoded_prompts = tokenizer.batch_decode(data["source_ids"], skip_special_tokens=True)
+
+            if step == 0:
+                # print a few examples
+                for prompt, generated_response, response in zip(decoded_prompts[:4], decoded_preds[:4], decoded_labels[:4]):
+                    print(f"Prompt: {prompt} | Generated Response: {generated_response} | Label Response: {response}\n")
+
+            # clean and send to metric
+            decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+            metric.add_batch(predictions=decoded_preds, references=decoded_labels, )
+            
+    # compute result
+    result = metric.compute()
+    bleu_score = result["score"]
+    print({"bleu": bleu_score})  # 0 bad, 1 good
+    return bleu_score
+
+
 def main():
 
     # get args
@@ -288,7 +359,7 @@ def main():
     # build ds 
     # '/mnt/c/Users/afogarty/Desktop/ML/SES/alpaca_clean_to_pq.parquet'
     # '/mnt/c/Users/afogarty/Desktop/newest_demo.parquet'
-    myds = Seq2SeqDataset(df_path=r'/mnt/c/Users/afogarty/Desktop/ML/SES/alpaca_clean_to_pq.parquet',
+    myds = Seq2SeqDataset(df_path=r'/mnt/c/Users/afogarty/Desktop/newest_demo.parquet',
                     tokenizer=tokenizer,
                     max_source_len=args.max_source_len,
                     max_target_len=args.max_target_len,
@@ -504,77 +575,18 @@ def main():
         if args.eval:
             print('Now Evaluating...')
 
-            for step, batch in enumerate(eval_loader):
-                start_time = time()
-                model.eval()
-
-                with torch.no_grad():
-                    # unpack
-                    data = {k: v.to(device) for k, v in batch.items()}
-
-                    # generate predictions
-                    generated_tokens = model.generate(input_ids=data["source_ids"],
-                                                    attention_mask=data["source_mask"],
-                                                    max_length=myds.max_target_len,
-                                                    num_beams=10,
-                                                    length_penalty=False,
-                                                    no_repeat_ngram_size=3,
-                                                    encoder_no_repeat_ngram_size=3,
-                                                    repetition_penalty=1.2
-                                                    )
-                    
-                    # unpack labels
-                    labels = data["target_ids"]
-
-                    # set preds and labels to cpu
-                    generated_tokens, labels = accelerator.gather((generated_tokens, labels))
-                    generated_tokens = generated_tokens.cpu().numpy()
-                    labels = labels.cpu().numpy()
-
-                    # Replace -100 in the labels as we can't decode them; not needed in this case
-                    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-
-                    # decode
-                    decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-                    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-                    decoded_prompts = tokenizer.batch_decode(data["source_ids"], skip_special_tokens=True)
-
-                    if step == 0:
-                        # print a few examples
-                        for prompt, generated_response, response in zip(decoded_prompts[:4], decoded_preds[:4], decoded_labels[:4]):
-                            print(f"Prompt: {prompt} | Generated Response: {generated_response} | Label Response: {response}\n")
-
-                    # clean and send to metric
-                    decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-                    metric.add_batch(predictions=decoded_preds, references=decoded_labels, )
-                    
-            # compute result
-            result = metric.compute()
-            bleu_score = result["score"]
-            print({"bleu": bleu_score})  # 0 bad, 1 good
-
+            start_time = time()
+            bleu_score = eval(args=args, ds=myds, device=device, model=model, metric=metric, tokenizer=tokenizer, eval_loader=eval_loader, accelerator=accelerator)
             end_time = time()
-            print(f"Epoch {epoch} evaluation took {end_time - start_time} seconds")
 
+            print(f"Epoch {epoch} evaluation took {end_time - start_time} seconds")
             if (best_metric is None or best_metric < bleu_score) and args.load_best_model:
                 best_metric = bleu_score
                 best_metric_checkpoint = os.path.join(args.output_dir, str(epoch))
                 print(f"New best metric: {best_metric} at epoch {epoch}")
                 print(f"best_metric_checkpoint: {best_metric_checkpoint}")
 
-    # save end of training
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir + rf'/epoch_{epoch}',
-            is_main_process=accelerator.is_main_process,
-            save_function=accelerator.save,
-            state_dict=accelerator.get_state_dict(model),
-        )
 
 
 if __name__ == "__main__":
     main()
-
-
