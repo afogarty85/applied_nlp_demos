@@ -13,11 +13,10 @@ from time import time
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from datasets import Dataset
-from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType
+from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType, prepare_model_for_int8_training, AdaLoraConfig
 from deepspeed.ops.adam import FusedAdam
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
-
 
 
 # accelerate launch \
@@ -26,12 +25,13 @@ torch.manual_seed(0)
 # --gradient_accumulation_steps 1 \
 # --gradient_clipping 1 \
 # --num_cpu_threads_per_process 16 \
+# --mixed_precision bf16 \
 # accelerate_t5.py \
-# --model_name_or_path google/flan-t5-small \
+# --model_name_or_path google/flan-t5-xl \
 # --mixed_precision bf16 \
 # --gradient_accumulation_steps 1 \
-# --per_device_train_batch_size 128 \
-# --per_device_eval_batch_size 128 \
+# --per_device_train_batch_size 16 \
+# --per_device_eval_batch_size 16 \
 # --num_train_epochs 4 \
 # --logging_steps 200 \
 # --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
@@ -42,11 +42,41 @@ torch.manual_seed(0)
 # --max_target_len 512 \
 # --eval True \
 # --token_calc True \
+# --adalora False \
 # --lora True \
-# --lora_r 8 \
-# --lora_alpha 16
+# --lora_r 32 \
+# --lora_alpha 64 \
+# --int8 False
 
-
+# if we want to use int8 with t5
+# accelerate launch \
+# --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
+# --use_deepspeed \
+# --gradient_accumulation_steps 1 \
+# --gradient_clipping 1 \
+# --num_cpu_threads_per_process 16 \
+# --mixed_precision no \
+# accelerate_t5.py \
+# --model_name_or_path google/flan-t5-small \
+# --mixed_precision no \
+# --gradient_accumulation_steps 1 \
+# --per_device_train_batch_size 16 \
+# --per_device_eval_batch_size 8 \
+# --num_train_epochs 4 \
+# --logging_steps 200 \
+# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
+# --learning_rate 4e-4 \
+# --weight_decay 0.01 \
+# --checkpointing_steps epoch \
+# --max_source_len 64 \
+# --max_target_len 512 \
+# --eval True \
+# --token_calc True \
+# --adalora False \
+# --lora True \
+# --lora_r 32 \
+# --lora_alpha 64 \
+# --int8 True
 
 
 
@@ -274,11 +304,23 @@ def parse_args():
         help="Whether to check token lengths",
     )
     parser.add_argument(
+        "--adalora",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Whether to check token lengths",
+    )    
+    parser.add_argument(
         "--lora_r",
         type=int,
         default=None,
         help="lora R; setting r == alpha seems to not do well",
     )
+    parser.add_argument(
+        "--int8",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Whether to load the model in int8",
+    )   
     parser.add_argument(
         "--lora_alpha",
         type=int,
@@ -459,13 +501,54 @@ def main():
         print('LoRA Triggered!')
 
         # set config
-        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.1)
+        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules=["q", "v"], inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.05, bias="none")
 
         # load model
         model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
-                                                            torch_dtype='auto',
                                                             device_map='auto',
+                                                            load_in_8bit=True if args.int8 else False,
                                                             )
+        
+        if args.int8:
+            model = prepare_model_for_int8_training(model)
+        
+        # set peft
+        model = get_peft_model(model, peft_config)
+
+        # print impact
+        model.print_trainable_parameters()
+
+        peft_model_id = f"{args.output_dir}_{peft_config.peft_type}_{peft_config.task_type}"
+
+
+    # adalora
+    if args.adalora:
+        print('AdaLoRA Triggered!')
+
+        # set config
+        peft_config = AdaLoraConfig(
+                bias="none",
+                init_r=12,
+                target_r=8,
+                beta1=0.85,
+                beta2=0.85,
+                tinit=100,
+                tfinal=800,
+                deltaT=10,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=0.05,
+                target_modules=["q", "k", "v", "o", "wi", "wo"],
+                orth_reg_weight=0.5,
+            )
+
+        # load model
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
+                                                            device_map='auto',
+                                                            load_in_8bit=True if args.int8 else False,
+                                                            )
+        
+        if args.int8:
+            model = prepare_model_for_int8_training(model)
         
         # set peft
         model = get_peft_model(model, peft_config)
@@ -479,9 +562,13 @@ def main():
         print('Bypassing LoRA...')
         # init model
         model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
-                                                                torch_dtype='auto',
+                                                                load_in_8bit=True if args.int8 else False,
                                                                 device_map='auto',
                                                                 )
+
+        if args.int8 and not args.lora:
+            print('Bypassing LoRA but going Int8!')
+            model = prepare_model_for_int8_training(model)
 
     # define project
     my_proj = ProjectConfiguration(project_dir=args.output_dir if args.lora is not True else peft_model_id,
@@ -536,7 +623,10 @@ def main():
 
     # initialize device
     device = accelerator.device
-    model.to(device)
+
+    # set device
+    if not args.int8:
+        model.to(device)
 
     # accelerator prepare
     model, optimizer, train_loader, lr_scheduler = accelerator.prepare(model, optimizer, train_loader, lr_scheduler)
@@ -556,7 +646,7 @@ def main():
 
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
-    best_metric = None
+    best_metric = 0
     best_metric_checkpoint = None
     metric = evaluate.load("sacrebleu")
 
@@ -638,7 +728,7 @@ def main():
             end_time = time()
 
             print(f"Epoch {epoch} evaluation took {end_time - start_time} seconds")
-            if (best_metric is None or best_metric < bleu_score) and args.load_best_model:
+            if best_metric < bleu_score:
                 best_metric = bleu_score
                 best_metric_checkpoint = os.path.join(args.output_dir, str(epoch))
                 print(f"New best metric: {best_metric} at epoch {epoch}")
@@ -648,3 +738,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
