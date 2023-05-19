@@ -8,8 +8,9 @@
 
 ## Sample Results
 
+### google/flan-t5-large
+
 ```
-# google/flan-t5-large
 input sentence: Given a set of numbers, find the maximum value.
 {10, 3, 25, 6, 16}
 response: 25
@@ -27,8 +28,11 @@ response: paris
 
 input sentence: Name two types of desert biomes.
 response: sahara
+```
 
-# alpaca fine-tuned
+### Fine-tuned on Alpaca
+
+```
 input sentence: Given a set of numbers, find the maximum value.
 {10, 3, 25, 6, 16}
 response: 25
@@ -46,11 +50,7 @@ response: Paris
 
 input sentence: Name two types of desert biomes.
 response: Desert biomes can be divided into two main types: arid and semi-arid. Arid deserts are characterized by high levels of deforestation, sparse vegetation, and limited water availability. Semi-desert deserts, on the other hand, are relatively dry deserts with little to no vegetation.
-
-
 ```
-
-
 
 
 
