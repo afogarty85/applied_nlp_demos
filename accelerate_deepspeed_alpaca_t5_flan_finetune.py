@@ -13,9 +13,11 @@ from time import time
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from datasets import Dataset
+from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType
 from deepspeed.ops.adam import FusedAdam
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
+
 
 
 # accelerate launch \
@@ -31,7 +33,7 @@ torch.manual_seed(0)
 # --per_device_train_batch_size 128 \
 # --per_device_eval_batch_size 128 \
 # --num_train_epochs 4 \
-# --logging_steps 500 \
+# --logging_steps 200 \
 # --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
 # --learning_rate 4e-4 \
 # --weight_decay 0.01 \
@@ -39,7 +41,13 @@ torch.manual_seed(0)
 # --max_source_len 64 \
 # --max_target_len 512 \
 # --eval True \
-# --token_calc True
+# --token_calc True \
+# --lora True \
+# --lora_r 8 \
+# --lora_alpha 16
+
+
+
 
 
 
@@ -258,7 +266,25 @@ def parse_args():
         default=True,
         type=lambda x: (str(x).lower() == 'true'),
         help="Whether to check token lengths",
-    )       
+    )
+    parser.add_argument(
+        "--lora",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Whether to check token lengths",
+    )
+    parser.add_argument(
+        "--lora_r",
+        type=int,
+        default=None,
+        help="lora R; setting r == alpha seems to not do well",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=None,
+        help="lora alpha; setting r == alpha seems to not do well",
+    )        
     parser.add_argument(
         "--eval",
         default=False,
@@ -401,18 +427,6 @@ def main():
                 "target_ids": target_ids, "target_mask": target_mask,}
 
 
-    # define project
-    my_proj = ProjectConfiguration(project_dir=args.output_dir,
-                                   automatic_checkpoint_naming=True,
-                                   total_limit=5,)
-    
-    # init accelerator
-    accelerator = Accelerator(mixed_precision=args.mixed_precision,
-                              gradient_accumulation_steps=args.gradient_accumulation_steps,
-                              project_config=my_proj
-                              )
-    accelerator.print(f"{AcceleratorState()}")
-
     # custom random split
     train_size = int(0.99 * len(myds))
     valid_test_size = len(myds) - train_size
@@ -440,11 +454,46 @@ def main():
     # warm steps
     args.num_warmup_steps = int(0.06 * (len(train_set) // args.per_device_train_batch_size) * args.num_train_epochs)
 
-    # init model
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
+    # lora
+    if args.lora:
+        print('LoRA Triggered!')
+
+        # set config
+        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=0.1)
+
+        # load model
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
                                                             torch_dtype='auto',
                                                             device_map='auto',
                                                             )
+        
+        # set peft
+        model = get_peft_model(model, peft_config)
+
+        # print impact
+        model.print_trainable_parameters()
+
+        peft_model_id = f"{args.output_dir}_{peft_config.peft_type}_{peft_config.task_type}"
+
+    if not args.lora:
+        print('Bypassing LoRA...')
+        # init model
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
+                                                                torch_dtype='auto',
+                                                                device_map='auto',
+                                                                )
+
+    # define project
+    my_proj = ProjectConfiguration(project_dir=args.output_dir if args.lora is not True else peft_model_id,
+                                   automatic_checkpoint_naming=True,
+                                   total_limit=5,)
+    
+    # init accelerator
+    accelerator = Accelerator(mixed_precision=args.mixed_precision,
+                              gradient_accumulation_steps=args.gradient_accumulation_steps,
+                              project_config=my_proj
+                              )
+    accelerator.print(f"{AcceleratorState()}")
 
      # split weights in two groups, one with weight decay and the other without
     no_decay = ["bias", "LayerNorm.weight"]
@@ -467,12 +516,12 @@ def main():
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     # or torch.optim.AdamW | FusedAdam | apex.optimizers.FusedAdam
-    optimizer = FusedAdam(optimizer_grouped_parameters,
+    optimizer = FusedAdam(model.parameters() if args.lora else optimizer_grouped_parameters,
                           adam_w_mode=True,
                           lr=args.learning_rate)
     
     lr_scheduler = get_scheduler(name=args.lr_scheduler_type,
-                                 optimizer=optimizer,
+                                optimizer=optimizer,
                                 num_warmup_steps=args.num_warmup_steps,
                                 num_training_steps=args.max_train_steps,
                             )
@@ -553,7 +602,6 @@ def main():
             # checkpoint
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
-                    print(args.output_dir + '/checkpoints')
                     os.makedirs(args.output_dir + '/checkpoints', exist_ok=True)
                     accelerator.save_state()
 
