@@ -3,7 +3,7 @@
 
 # Modern NLP
 
-1. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
+1. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
 
 
 ## Sample Results
