@@ -13,7 +13,7 @@ from time import time
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from datasets import Dataset
-from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType, prepare_model_for_int8_training, AdaLoraConfig
+from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType, prepare_model_for_int8_training, AdaLoraConfig, PeftModel
 from deepspeed.ops.adam import FusedAdam
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
@@ -77,6 +77,38 @@ torch.manual_seed(0)
 # --lora_r 32 \
 # --lora_alpha 64 \
 # --int8 True
+
+
+# accelerate launch \
+# --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
+# --use_deepspeed \
+# --gradient_accumulation_steps 2 \
+# --gradient_clipping 1 \
+# --num_cpu_threads_per_process 16 \
+# --mixed_precision bf16 \
+# accelerate_t5.py \
+# --model_name_or_path google/flan-t5-large \
+# --mixed_precision bf16 \
+# --gradient_accumulation_steps 2 \
+# --per_device_train_batch_size 32 \
+# --per_device_eval_batch_size 32 \
+# --num_train_epochs 8 \
+# --logging_steps 100 \
+# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_large_ft \
+# --learning_rate 4e-4 \
+# --weight_decay 0.01 \
+# --checkpointing_steps epoch \
+# --max_source_len 64 \
+# --max_target_len 512 \
+# --eval False \
+# --token_calc True \
+# --lora False \
+# --lora_r 32 \
+# --lora_alpha 64 \
+# --int8 False
+
+
+
 
 
 
@@ -304,12 +336,6 @@ def parse_args():
         help="Whether to check token lengths",
     )
     parser.add_argument(
-        "--adalora",
-        default=False,
-        type=lambda x: (str(x).lower() == 'true'),
-        help="Whether to check token lengths",
-    )    
-    parser.add_argument(
         "--lora_r",
         type=int,
         default=None,
@@ -509,6 +535,7 @@ def main():
                                                             load_in_8bit=True if args.int8 else False,
                                                             )
         
+        # if lora + int8
         if args.int8:
             model = prepare_model_for_int8_training(model)
         
@@ -520,43 +547,6 @@ def main():
 
         peft_model_id = f"{args.output_dir}_{peft_config.peft_type}_{peft_config.task_type}"
 
-
-    # adalora
-    if args.adalora:
-        print('AdaLoRA Triggered!')
-
-        # set config
-        peft_config = AdaLoraConfig(
-                bias="none",
-                init_r=12,
-                target_r=8,
-                beta1=0.85,
-                beta2=0.85,
-                tinit=100,
-                tfinal=800,
-                deltaT=10,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=0.05,
-                target_modules=["q", "k", "v", "o", "wi", "wo"],
-                orth_reg_weight=0.5,
-            )
-
-        # load model
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
-                                                            device_map='auto',
-                                                            load_in_8bit=True if args.int8 else False,
-                                                            )
-        
-        if args.int8:
-            model = prepare_model_for_int8_training(model)
-        
-        # set peft
-        model = get_peft_model(model, peft_config)
-
-        # print impact
-        model.print_trainable_parameters()
-
-        peft_model_id = f"{args.output_dir}_{peft_config.peft_type}_{peft_config.task_type}"
 
     if not args.lora:
         print('Bypassing LoRA...')
@@ -623,10 +613,7 @@ def main():
 
     # initialize device
     device = accelerator.device
-
-    # set device
-    if not args.int8:
-        model.to(device)
+    model.to(device)
 
     # accelerator prepare
     model, optimizer, train_loader, lr_scheduler = accelerator.prepare(model, optimizer, train_loader, lr_scheduler)
@@ -666,28 +653,27 @@ def main():
 
             # forward -- with gradient accumulation
             with accelerator.accumulate(model):
-                outputs = model(input_ids=data["source_ids"],
-                                attention_mask=data["source_mask"],
-                                labels=data["target_ids"],
-                                decoder_attention_mask=data["target_mask"],
-                                )
+                with accelerator.autocast():
+                    outputs = model(input_ids=data["source_ids"],
+                                    attention_mask=data["source_mask"],
+                                    labels=data["target_ids"],
+                                    decoder_attention_mask=data["target_mask"],
+                                    )
             
             # loss / store
             loss = outputs.loss
             total_loss += loss.detach().float()
-            loss = loss / args.gradient_accumulation_steps
 
             # backward
             accelerator.backward(loss)
 
             # update
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_loader) - 1:
-                optimizer.step()
-                if not accelerator.optimizer_step_was_skipped:
-                    lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
+            optimizer.step()
+            if not accelerator.optimizer_step_was_skipped:
+                lr_scheduler.step()
+            optimizer.zero_grad()
+            progress_bar.update(1)
+            completed_steps += 1
 
             # checkpoint
             if isinstance(checkpointing_steps, int):
