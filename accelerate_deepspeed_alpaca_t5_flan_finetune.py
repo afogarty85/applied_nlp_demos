@@ -351,7 +351,7 @@ def postprocess_text(preds, labels):
     return preds, labels
 
 
-def eval(args, ds, device, model, metric, tokenizer, eval_loader, accelerator):
+def eval(args, ds, model, metric, tokenizer, eval_loader, accelerator):
     '''
     Evaluate function with bleu
     '''
@@ -385,7 +385,7 @@ def eval(args, ds, device, model, metric, tokenizer, eval_loader, accelerator):
             labels = batch["target_ids"]
 
             # set preds and labels to cpu
-            generated_tokens, labels = accelerator.gather((generated_tokens, labels))
+            generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
             generated_tokens = generated_tokens.cpu().numpy()
             labels = labels.cpu().numpy()
 
@@ -461,13 +461,17 @@ def main():
 
 
     # custom random split
-    train_size = int(0.99 * len(myds))
+    train_size = int(.99999 * len(myds))
     valid_test_size = len(myds) - train_size
     valid_size = int(valid_test_size * 0.5)
     test_size = int(valid_test_size * 0.5)
 
-    # subset
-    train_set, valid_set,  = torch.utils.data.random_split(myds, [train_size, valid_test_size,])
+    valid_size = int(0.01 * len(myds))
+    blank_size = len(myds) - valid_size
+
+    # make nicer later
+    train_set, valid_set = torch.utils.data.random_split(myds, [train_size, valid_test_size])
+    valid_set, _ = torch.utils.data.random_split(myds, [ valid_size , blank_size])
 
     # loaders
     train_loader = torch.utils.data.DataLoader(train_set,
@@ -537,7 +541,7 @@ def main():
     accelerator = Accelerator(mixed_precision=args.mixed_precision,
                               gradient_accumulation_steps=args.gradient_accumulation_steps,
                               project_config=my_proj,
-                              device_placement=False,
+                              device_placement=True,
                                )
     accelerator.print(f"{AcceleratorState()}")
 
@@ -615,8 +619,7 @@ def main():
         model.config.use_cache = False
 
     # initialize device
-    device = accelerator.device
-    model, optimizer, train_loader, lr_scheduler = accelerator.prepare(model, optimizer, train_loader, lr_scheduler)
+    model, optimizer, train_loader, eval_loader, lr_scheduler = accelerator.prepare(model, optimizer, train_loader, eval_loader, lr_scheduler)
 
     # report batch size; mostly interesting for multi-gpu env
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -711,7 +714,7 @@ def main():
             print('Now Evaluating...')
 
             start_time = time()
-            bleu_score = eval(args=args, ds=myds, device=device, model=model, metric=metric, tokenizer=tokenizer, eval_loader=eval_loader, accelerator=accelerator)
+            bleu_score = eval(args=args, ds=myds, model=model, metric=metric, tokenizer=tokenizer, eval_loader=eval_loader, accelerator=accelerator)
             end_time = time()
 
             print(f"Epoch {epoch} evaluation took {end_time - start_time} seconds")
