@@ -8,13 +8,14 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BatchEncoding, Au
 from transformers.optimization import Adafactor, AdafactorSchedule, get_scheduler, SchedulerType
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import ProjectConfiguration, DummyScheduler, DummyOptim
 from time import time
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from datasets import Dataset
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType, prepare_model_for_int8_training, AdaLoraConfig, PeftModel
 from deepspeed.ops.adam import FusedAdam
+import bitsandbytes as bnb
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
 
@@ -79,33 +80,7 @@ torch.manual_seed(0)
 # --int8 True
 
 
-# accelerate launch \
-# --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
-# --use_deepspeed \
-# --gradient_accumulation_steps 2 \
-# --gradient_clipping 1 \
-# --num_cpu_threads_per_process 16 \
-# --mixed_precision bf16 \
-# accelerate_t5.py \
-# --model_name_or_path google/flan-t5-large \
-# --mixed_precision bf16 \
-# --gradient_accumulation_steps 2 \
-# --per_device_train_batch_size 32 \
-# --per_device_eval_batch_size 32 \
-# --num_train_epochs 8 \
-# --logging_steps 100 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_large_ft \
-# --learning_rate 4e-4 \
-# --weight_decay 0.01 \
-# --checkpointing_steps epoch \
-# --max_source_len 64 \
-# --max_target_len 512 \
-# --eval False \
-# --token_calc True \
-# --lora False \
-# --lora_r 32 \
-# --lora_alpha 64 \
-# --int8 False
+# for very large models on single gpu, t5-xl+
 
 
 
@@ -358,7 +333,13 @@ def parse_args():
         default=False,
         type=lambda x: (str(x).lower() == 'true'),
         help="Whether to evaluate or not -- can be costly in time!",
-    )    
+    )
+    parser.add_argument(
+        "--gradient_checkpointing",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Whether to evaluate or not -- can be costly in time!",
+    )       
     parser.add_argument(
             "--lr_scheduler_type",
             type=SchedulerType,
@@ -533,6 +514,7 @@ def main():
         model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
                                                             device_map='auto',
                                                             load_in_8bit=True if args.int8 else False,
+                                                            torch_dtype=torch.bfloat16 if args.mixed_precision == 'bf16' else "auto",
                                                             )
         
         # if lora + int8
@@ -542,9 +524,7 @@ def main():
         # set peft
         model = get_peft_model(model, peft_config)
 
-        # print impact
-        model.print_trainable_parameters()
-
+        # set id
         peft_model_id = f"{args.output_dir}_{peft_config.peft_type}_{peft_config.task_type}"
 
 
@@ -554,8 +534,9 @@ def main():
         model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path,
                                                                 load_in_8bit=True if args.int8 else False,
                                                                 device_map='auto',
+                                                                torch_dtype=torch.bfloat16 if args.mixed_precision == 'bf16' else "auto",
                                                                 )
-
+        
         if args.int8 and not args.lora:
             print('Bypassing LoRA but going Int8!')
             model = prepare_model_for_int8_training(model)
@@ -568,7 +549,7 @@ def main():
     # init accelerator
     accelerator = Accelerator(mixed_precision=args.mixed_precision,
                               gradient_accumulation_steps=args.gradient_accumulation_steps,
-                              project_config=my_proj
+                              project_config=my_proj,
                               )
     accelerator.print(f"{AcceleratorState()}")
 
@@ -587,20 +568,24 @@ def main():
 
     # scheduler and training steps
     num_update_steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    else:
-        args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch * args.gradient_accumulation_steps
 
-    # or torch.optim.AdamW | FusedAdam | apex.optimizers.FusedAdam
+
+    # Creates Dummy Optimizer if `optimizer` was spcified in the config file else creates Adam Optimizer
+    #optimizer = DummyOptim(optimizer_grouped_parameters, lr=args.learning_rate)
+
+    # Creates Dummy Scheduler if `scheduler` was spcified in the config file else creates `args.lr_scheduler_type` Scheduler
+    #lr_scheduler = DummyScheduler(optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.num_warmup_steps)
+
+    # or torch.optim.AdamW | FusedAdam | apex.optimizers.FusedAdam | Adafactor | bnb.optim.Adam8bit
     optimizer = FusedAdam(model.parameters() if args.lora else optimizer_grouped_parameters,
                           adam_w_mode=True,
                           lr=args.learning_rate)
     
     lr_scheduler = get_scheduler(name=args.lr_scheduler_type,
                                 optimizer=optimizer,
-                                num_warmup_steps=args.num_warmup_steps,
-                                num_training_steps=args.max_train_steps,
+                                num_warmup_steps=args.num_warmup_steps * args.gradient_accumulation_steps,
+                                num_training_steps=args.max_train_steps * args.gradient_accumulation_steps
                             )
  
     # set checkpoint steps for accelerator save
@@ -611,6 +596,12 @@ def main():
     else:
         checkpointing_steps = None
 
+
+    if args.gradient_checkpointing:
+        print('Turning on gradient checkpoints...')
+        model.gradient_checkpointing_enable()
+        model.config.use_cache = False
+
     # initialize device
     device = accelerator.device
     model.to(device)
@@ -618,11 +609,15 @@ def main():
     # accelerator prepare
     model, optimizer, train_loader, lr_scheduler = accelerator.prepare(model, optimizer, train_loader, lr_scheduler)
 
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
+    # num_update_steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
+    # args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+
     # report batch size; mostly interesting for multi-gpu env
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     print("***** Running training *****")
-    print(f"  Num examples = {len(myds)}")
+    print(f"  Num examples = {len(train_set)}")
     print(f"  Num Epochs = {args.num_train_epochs}")
     print(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     print(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -645,35 +640,33 @@ def main():
         total_loss = 0
 
         for step, batch in enumerate(train_loader):
-            # unpack
-            data = {k: v.to(device) for k, v in batch.items()}
 
             # recode pad to -100 to dodge loss
-            data["target_ids"] = torch.where(data["target_ids"] == tokenizer.pad_token_id, -100, data["target_ids"])
+            batch["target_ids"] = torch.where(batch["target_ids"] == tokenizer.pad_token_id, -100, batch["target_ids"])
 
             # forward -- with gradient accumulation
             with accelerator.accumulate(model):
                 with accelerator.autocast():
-                    outputs = model(input_ids=data["source_ids"],
-                                    attention_mask=data["source_mask"],
-                                    labels=data["target_ids"],
-                                    decoder_attention_mask=data["target_mask"],
+                    outputs = model(input_ids=batch["source_ids"],
+                                    attention_mask=batch["source_mask"],
+                                    labels=batch["target_ids"],
+                                    decoder_attention_mask=batch["target_mask"],
                                     )
             
-            # loss / store
-            loss = outputs.loss
-            total_loss += loss.detach().float()
+                    # loss / store
+                    loss = outputs.loss
+                    total_loss += loss.detach().float()
 
-            # backward
-            accelerator.backward(loss)
+                    # backward
+                    accelerator.backward(loss)
 
-            # update
-            optimizer.step()
-            if not accelerator.optimizer_step_was_skipped:
-                lr_scheduler.step()
-            optimizer.zero_grad()
-            progress_bar.update(1)
-            completed_steps += 1
+                    # update
+                    optimizer.step()
+                    if not accelerator.optimizer_step_was_skipped:
+                        lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
 
             # checkpoint
             if isinstance(checkpointing_steps, int):
@@ -688,7 +681,10 @@ def main():
                     train_loss = total_loss.item() / steps_this_epoch
                     train_perplexity = math.exp(train_loss)
                     # report
-                    print(f"Epoch: { round(( completed_steps / num_update_steps_per_epoch ), 2) }, Step: {completed_steps}, Loss: {round(train_loss, 2)}, Perplexity: {round(train_perplexity, 2)}")
+                    print(f"Epoch: { round(( completed_steps / (num_update_steps_per_epoch * args.gradient_accumulation_steps) ), 2) }, Step: {completed_steps}, Steps This Epoch: {steps_this_epoch}, Loss: {round(train_loss, 2)}, Perplexity: {round(train_perplexity, 2)}")
+
+            if completed_steps >= args.max_train_steps:
+                break
 
         # report timings
         end_time = time()
