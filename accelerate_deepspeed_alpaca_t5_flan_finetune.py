@@ -19,96 +19,34 @@ import bitsandbytes as bnb
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
 
-
 # accelerate launch \
 # --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
 # --use_deepspeed \
-# --gradient_accumulation_steps 1 \
-# --gradient_clipping 1 \
-# --num_cpu_threads_per_process 16 \
-# --mixed_precision bf16 \
-# accelerate_t5.py \
-# --model_name_or_path google/flan-t5-xl \
-# --mixed_precision bf16 \
-# --gradient_accumulation_steps 1 \
-# --per_device_train_batch_size 16 \
-# --per_device_eval_batch_size 16 \
-# --num_train_epochs 4 \
-# --logging_steps 200 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
-# --learning_rate 4e-4 \
-# --weight_decay 0.01 \
-# --checkpointing_steps epoch \
-# --max_source_len 64 \
-# --max_target_len 512 \
-# --eval True \
-# --token_calc True \
-# --adalora False \
-# --lora True \
-# --lora_r 32 \
-# --lora_alpha 64 \
-# --int8 False
-
-# if we want to use int8 with t5
-# accelerate launch \
-# --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
-# --use_deepspeed \
-# --gradient_accumulation_steps 1 \
-# --gradient_clipping 1 \
-# --num_cpu_threads_per_process 16 \
-# --mixed_precision no \
 # accelerate_t5.py \
 # --model_name_or_path google/flan-t5-small \
-# --mixed_precision no \
+# --mixed_precision bf16 \
 # --gradient_accumulation_steps 1 \
-# --per_device_train_batch_size 16 \
-# --per_device_eval_batch_size 8 \
-# --num_train_epochs 4 \
-# --logging_steps 200 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small \
-# --learning_rate 4e-4 \
-# --weight_decay 0.01 \
-# --checkpointing_steps epoch \
-# --max_source_len 64 \
-# --max_target_len 512 \
-# --eval True \
-# --token_calc True \
-# --adalora False \
-# --lora True \
-# --lora_r 32 \
-# --lora_alpha 64 \
-# --int8 True
-
-
-# accelerate launch \
-# --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
-# --use_deepspeed \
-# --zero_stage 2 \
-# --gradient_accumulation_steps 4 \
-# --gradient_clipping 1 \
-# --num_cpu_threads_per_process 16 \
-# --mixed_precision bf16 \
-# accelerate_t5.py \
-# --model_name_or_path bf16_flan_t5_xl \
-# --mixed_precision bf16 \
-# --gradient_accumulation_steps 4 \
-# --per_device_train_batch_size 18 \
+# --per_device_train_batch_size 128 \
 # --per_device_eval_batch_size 32 \
 # --num_train_epochs 8 \
 # --logging_steps 100 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_xl_lora \
-# --learning_rate 4e-3 \
+# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small_ft \
+# --learning_rate 5e-5 \
 # --weight_decay 0.01 \
 # --checkpointing_steps epoch \
 # --max_source_len 64 \
 # --max_target_len 512 \
 # --eval False \
 # --token_calc True \
-# --lora True \
+# --lora False \
 # --lora_r 32 \
 # --lora_alpha 64 \
 # --int8 False \
-# --gradient_checkpointing False
+# --gradient_checkpointing False \
+# --stage 2 \
+# --num_cpu_threads_per_process 12 \
+# --gradient_clipping 1 \
+# --fused_adam True
 
 
 
@@ -298,7 +236,25 @@ def parse_args():
         type=int,
         default=None,
         help="val max target length for predictions",
-    )    
+    )
+    parser.add_argument(
+        "--stage",
+        type=int,
+        default=2,
+        help="Deepspeed stage; 2 or 3",
+    )
+    parser.add_argument(
+        "--gradient_clipping",
+        type=int,
+        default=1,
+        help="Gradient clipping value",
+    )
+    parser.add_argument(
+        "--num_cpu_threads_per_process",
+        type=int,
+        default=12,
+        help="Num threads per process",
+    )                       
     parser.add_argument(
         "--checkpointing_steps",
         type=str,
@@ -358,6 +314,12 @@ def parse_args():
         type=lambda x: (str(x).lower() == 'true'),
         help="Whether to evaluate or not -- can be costly in time!",
     )
+    parser.add_argument(
+        "--fused_adam",
+        default=True,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Whether we want to use fused adam; trade speed for GPU memory (can't offload!)",
+    )    
     parser.add_argument(
         "--gradient_checkpointing",
         default=False,
@@ -565,6 +527,7 @@ def main():
             print('Bypassing LoRA and going Int8!')
             model = prepare_model_for_int8_training(model)
 
+
     # define project
     my_proj = ProjectConfiguration(project_dir=args.output_dir if args.lora is not True else peft_model_id,
                                    automatic_checkpoint_naming=True,
@@ -577,6 +540,27 @@ def main():
                               device_placement=False,
                                )
     accelerator.print(f"{AcceleratorState()}")
+
+    # set deepspeed config from accelerator
+    accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["stage"] = args.stage    
+    accelerator.state.deepspeed_plugin.deepspeed_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
+    accelerator.state.deepspeed_plugin.deepspeed_config["gradient_clipping"] = args.gradient_clipping
+    accelerator.state.deepspeed_plugin.deepspeed_config["num_cpu_threads_per_process"] = args.num_cpu_threads_per_process
+    accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["round_robin_gradients"] = True
+
+    # cant use fused adam unless we dont offload to device
+    if args.fused_adam:
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_optimizer"]['device'] = 'none'
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_param"]["device"] = 'none'
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_optimizer"]["pin_memory"] = False
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_param"]["pin_memory"] = False
+
+    else:
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_optimizer"]['device'] = 'cpu'
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_param"]["device"] = 'cpu'
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_optimizer"]["pin_memory"] = True
+        accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["offload_param"]["pin_memory"] = True
+
 
      # split weights in two groups, one with weight decay and the other without
     no_decay = ["bias", "LayerNorm.weight"]
@@ -595,7 +579,6 @@ def main():
     num_update_steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch * args.gradient_accumulation_steps
 
-
     # Creates Dummy Optimizer if `optimizer` was spcified in the config file else creates Adam Optimizer
     #optimizer = DummyOptim(optimizer_grouped_parameters, lr=args.learning_rate)
 
@@ -603,10 +586,14 @@ def main():
     #lr_scheduler = DummyScheduler(optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.num_warmup_steps)
 
     # or torch.optim.AdamW | FusedAdam | apex.optimizers.FusedAdam | Adafactor | bnb.optim.Adam8bit
-    optimizer = FusedAdam(model.parameters() if args.lora else optimizer_grouped_parameters,
-                          adam_w_mode=True,
-                          lr=args.learning_rate)
-    
+    if args.fused_adam:
+        optimizer = FusedAdam(model.parameters() if args.lora else optimizer_grouped_parameters,
+                            adam_w_mode=True,
+                            lr=args.learning_rate)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters() if args.lora else optimizer_grouped_parameters,
+                            lr=args.learning_rate)
+        
     lr_scheduler = get_scheduler(name=args.lr_scheduler_type,
                                 optimizer=optimizer,
                                 num_warmup_steps=args.num_warmup_steps * args.gradient_accumulation_steps,
@@ -633,6 +620,7 @@ def main():
 
     # report batch size; mostly interesting for multi-gpu env
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+
 
     print("***** Running training *****")
     print(f"  Num examples = {len(train_set)}")
