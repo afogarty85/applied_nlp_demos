@@ -370,6 +370,23 @@ def set_similarity_score(decoded_preds, decoded_labels):
     return intersection_score
 
 
+def exact_match_score(decoded_preds, decoded_labels):
+    '''
+    Look for exact matches in strings
+    '''
+    # score holder
+    em_score = 0
+    for preds, labels in zip(decoded_preds, decoded_labels):
+        # clean
+        preds = preds.strip()
+        labels = labels.strip()
+        # check equality
+        em = int(preds == labels)
+        # add to score
+        em_score += em
+    return em_score
+
+
 def eval(args, ds, model, metric, tokenizer, eval_loader, accelerator):
     '''
     Evaluate function with bleu
