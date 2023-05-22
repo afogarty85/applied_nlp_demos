@@ -23,30 +23,31 @@ torch.manual_seed(0)
 # --config_file /mnt/c/Users/afogarty/Desktop/ML/SES/default_config.yaml \
 # --use_deepspeed \
 # accelerate_t5.py \
-# --model_name_or_path google/flan-t5-small \
+# --model_name_or_path google/flan-t5-large \
 # --mixed_precision bf16 \
 # --gradient_accumulation_steps 1 \
-# --per_device_train_batch_size 128 \
+# --per_device_train_batch_size 32 \
 # --per_device_eval_batch_size 32 \
 # --num_train_epochs 8 \
 # --logging_steps 100 \
-# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_small_ft \
-# --learning_rate 5e-5 \
+# --output_dir /mnt/c/Users/afogarty/Desktop/ML/SES/accelerate_chat_large_lora \
+# --learning_rate 3e-3 \
 # --weight_decay 0.01 \
 # --checkpointing_steps epoch \
 # --max_source_len 64 \
 # --max_target_len 512 \
-# --eval False \
+# --eval True \
 # --token_calc True \
-# --lora False \
-# --lora_r 32 \
-# --lora_alpha 64 \
+# --lora True \
+# --lora_r 8 \
+# --lora_alpha 16 \
 # --int8 False \
 # --gradient_checkpointing False \
-# --stage 2 \
-# --num_cpu_threads_per_process 12 \
+# --zero_stage 2 \
+# --num_cpu_threads_per_process 18 \
 # --gradient_clipping 1 \
 # --fused_adam True
+
 
 
 
@@ -238,7 +239,7 @@ def parse_args():
         help="val max target length for predictions",
     )
     parser.add_argument(
-        "--stage",
+        "--zero_stage",
         type=int,
         default=2,
         help="Deepspeed stage; 2 or 3",
@@ -347,8 +348,26 @@ def postprocess_text(preds, labels):
     labels = [label.strip() for label in labels]
 
     # expects list
+    #preds = list(map(lambda x: [x], preds))
     labels = list(map(lambda x: [x], labels))
     return preds, labels
+
+
+def set_similarity_score(decoded_preds, decoded_labels):
+    '''
+    Compare how well we match set data
+    '''
+    # score holder
+    intersection_score = 0
+    for preds, labels in zip(decoded_preds, decoded_labels):
+        # split and remove whitespace
+        preds = set([p.strip() for p in preds.split(',')])
+        labels = set([l.strip() for l in labels.split(',')])
+        # get count
+        intersection_count = len(set.intersection(preds, labels))
+        # add to score
+        intersection_score += intersection_count
+    return intersection_score
 
 
 def eval(args, ds, model, metric, tokenizer, eval_loader, accelerator):
@@ -361,15 +380,17 @@ def eval(args, ds, model, metric, tokenizer, eval_loader, accelerator):
 
     gen_kwargs = {
     "max_length": args.val_max_target_len if args.val_max_target_len is not None else ds.max_target_len,
-    "num_beams": 10,
+    "num_beams": 4,
     "min_length": 10,
     "length_penalty": False,
     "no_repeat_ngram_size": 0,
     "encoder_no_repeat_ngram_size": 0,
-    "repetition_penalty": 1.2,
+    "repetition_penalty": 2.5,
     }
 
     print(f"Using these text generating args: {gen_kwargs}")
+
+    total_intersection_score = 0
 
     for step, batch in enumerate(eval_loader):
 
@@ -395,22 +416,26 @@ def eval(args, ds, model, metric, tokenizer, eval_loader, accelerator):
             # decode
             decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-            decoded_prompts = tokenizer.batch_decode(batch["source_ids"], skip_special_tokens=True)
-
+            
             if step == 0:
+                decoded_prompts = tokenizer.batch_decode(batch["source_ids"], skip_special_tokens=True)
                 # print a few examples
                 for prompt, generated_response, response in zip(decoded_prompts[:4], decoded_preds[:4], decoded_labels[:4]):
                     print(f"Prompt: {prompt} | Generated Response: {generated_response} | Label Response: {response}\n")
 
             # clean and send to metric
-            decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-            metric.add_batch(predictions=decoded_preds, references=decoded_labels, )
+            #decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+            #metric.add_batch(predictions=decoded_preds, references=decoded_labels, )
+            total_intersection_score += set_similarity_score(decoded_preds, decoded_labels)
+
             
     # compute result
-    result = metric.compute()
-    bleu_score = result["score"]
-    print({"bleu": bleu_score})  # 0 bad, 1 good
-    return bleu_score
+    #result = metric.compute()
+    #metric_score = result['rougeL']
+    #print({"rogueL": metric_score})
+
+    print({"Total Intersection": total_intersection_score})
+    return total_intersection_score
 
 
 def main():
@@ -460,18 +485,24 @@ def main():
                 "target_ids": target_ids, "target_mask": target_mask,}
 
 
-    # custom random split
-    train_size = int(.99999 * len(myds))
-    valid_test_size = len(myds) - train_size
-    valid_size = int(valid_test_size * 0.5)
-    test_size = int(valid_test_size * 0.5)
 
-    valid_size = int(0.01 * len(myds))
-    blank_size = len(myds) - valid_size
+    # set train set
+    train_set = myds
 
-    # make nicer later
-    train_set, valid_set = torch.utils.data.random_split(myds, [train_size, valid_test_size])
-    valid_set, _ = torch.utils.data.random_split(myds, [ valid_size , blank_size])
+    # some indices of interest to eval
+    eval_idx_interest = [8557,  8178, 10459, 10423,  9496, 10954,  9186,  7595,  8652,
+                         8583,  8381, 10720,  6720,  6694,  7969, 10153,  5813,  5901,
+                         7436,  7793,  8731,  7877,  6228,  8214,  8430,  7488,  8190,
+                         8411,  7167,  6874,  7764,  9080, 10410,  9523,  7189,  9933,
+                         11118,  8601,  9072, 10790,  8126,  6590,  9471, 10342,  6132,
+                         9737,  7846,  6607, 10055,  9281,  8585,  7371,  7162,  8428,
+                         6460,  6578,  8862, 10072,  7196,  7501,  5614,  8001,  5978,
+                         7304,  9438,  7980,  5743,  7120,  5638, 10693,  9614,  6126,
+                         9995, 10254,  5733,  7550,  9248, 10203,  5903,  9591,  6098,
+                         9308,  9263,  9494,  6042,  7051,  6453,  7018,  7074,  6324,
+                         10656,  9566,  6532, 10466,  9384,  9595,  8535, 10126,  8504,
+                         8300]
+    valid_set = torch.utils.data.Subset(dataset=myds, indices=eval_idx_interest)
 
     # loaders
     train_loader = torch.utils.data.DataLoader(train_set,
@@ -546,7 +577,7 @@ def main():
     accelerator.print(f"{AcceleratorState()}")
 
     # set deepspeed config from accelerator
-    accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["stage"] = args.stage    
+    accelerator.state.deepspeed_plugin.deepspeed_config["zero_optimization"]["stage"] = args.zero_stage    
     accelerator.state.deepspeed_plugin.deepspeed_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
     accelerator.state.deepspeed_plugin.deepspeed_config["gradient_clipping"] = args.gradient_clipping
     accelerator.state.deepspeed_plugin.deepspeed_config["num_cpu_threads_per_process"] = args.num_cpu_threads_per_process
@@ -639,7 +670,7 @@ def main():
     completed_steps = 0
     best_metric = 0
     best_metric_checkpoint = None
-    metric = evaluate.load("sacrebleu")
+    metric = evaluate.load("rouge")
 
     # train loop
     for epoch in range(1, args.num_train_epochs + 1):
@@ -689,7 +720,7 @@ def main():
                     train_loss = total_loss.item() / steps_this_epoch
                     train_perplexity = math.exp(train_loss)
                     # report
-                    print(f"Epoch: { round(( completed_steps / (num_update_steps_per_epoch * args.gradient_accumulation_steps) ), 2) }, Step: {completed_steps}, Steps This Epoch: {steps_this_epoch}, Loss: {round(train_loss, 2)}, Perplexity: {round(train_perplexity, 2)}")
+                    print(f"Epoch: { round(( completed_steps / (num_update_steps_per_epoch * args.gradient_accumulation_steps) ), 3) }, Step: {completed_steps}, Steps This Epoch: {steps_this_epoch}, Loss: {round(train_loss, 3)}, Perplexity: {round(train_perplexity, 3)}")
 
             if completed_steps >= args.max_train_steps:
                 break
@@ -708,20 +739,28 @@ def main():
                 save_function=accelerator.save,
                 state_dict=accelerator.get_state_dict(model),
             )
+            tokenizer.save_pretrained(args.output_dir + rf'/epoch_{epoch}')
+
+            # manual save example
+            # torch.save({'model_state_dict': model.state_dict(),}, 'xd.pt')
+            # checkpoint = torch.load('xd.pt', map_location='cpu')
+            # model.load_state_dict(checkpoint['model_state_dict'])
+            # check weight changes
+            # model.state_dict()['lm_head.weight'][0, 0:5]
 
         # if eval
         if args.eval:
             print('Now Evaluating...')
 
             start_time = time()
-            bleu_score = eval(args=args, ds=myds, model=model, metric=metric, tokenizer=tokenizer, eval_loader=eval_loader, accelerator=accelerator)
+            metric_score = eval(args=args, ds=myds, model=model, metric=metric, tokenizer=tokenizer, eval_loader=eval_loader, accelerator=accelerator)
             end_time = time()
 
             print(f"Epoch {epoch} evaluation took {end_time - start_time} seconds")
-            if best_metric < bleu_score:
-                best_metric = bleu_score
+            if best_metric < metric_score:
+                best_metric = metric_score
                 best_metric_checkpoint = os.path.join(args.output_dir, str(epoch))
-                print(f"New best metric: {best_metric} at epoch {epoch}")
+                print(f"New best metric: {round(best_metric, 3)} at epoch {epoch}")
                 print(f"best_metric_checkpoint: {best_metric_checkpoint}")
 
 
