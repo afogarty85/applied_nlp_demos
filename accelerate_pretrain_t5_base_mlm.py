@@ -73,6 +73,9 @@ tokenized_datasets = tokenized_datasets.map(
     batched=True,
 )
 
+# shuffle ds
+tokenized_datasets = tokenized_datasets.shuffle(seed=42, buffer_size=160)
+
 # init config
 config = AutoConfig.from_pretrained('google/t5-v1_1-base', vocab_size=len(tokenizer))
 config.dropout_rate = 0.0
@@ -175,13 +178,12 @@ for epoch in range(1, num_train_epochs + 1):
             completed_steps += 1
 
         if accelerator.sync_gradients:
-            if step % logging_steps == 0:
-                # report current findings
-                curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
-                curr_perplexity = math.exp(curr_loss)
-                print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
-                # reset
-                total_loss = 0
+            # report current findings
+            curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
+            curr_perplexity = math.exp(curr_loss)
+            print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
+            # reset
+            total_loss = 0
 
       # report timings
     end_time = time()
