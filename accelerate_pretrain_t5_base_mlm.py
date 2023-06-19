@@ -74,7 +74,7 @@ tokenized_datasets = tokenized_datasets.map(
 )
 
 # shuffle ds
-tokenized_datasets = tokenized_datasets.shuffle(seed=42, buffer_size=160)
+tokenized_datasets = tokenized_datasets.shuffle(seed=42, buffer_size=10_000)
 
 # init config
 config = AutoConfig.from_pretrained('google/t5-v1_1-base', vocab_size=len(tokenizer))
@@ -123,7 +123,7 @@ optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=F
 # scheduler
 lr_scheduler = LambdaLR(optimizer, lambda step: min(1e-2, 1.0 / math.sqrt(step) ) / 0.01 if step else 1e-2 / 0.01)
 
-# 1lerate
+# accelerate
 gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=gradient_accumulation_steps, adjust_scheduler=True)
 accelerator = Accelerator(mixed_precision='bf16',
                             gradient_accumulation_plugin=gradient_accumulation_plugin,
@@ -145,7 +145,7 @@ completed_steps = 0
 best_metric = 0
 best_metric_checkpoint = None
 num_train_epochs = 1
-logging_steps = 5
+logging_steps = 50
 
 # train loop
 for epoch in range(1, num_train_epochs + 1):
@@ -189,25 +189,3 @@ for epoch in range(1, num_train_epochs + 1):
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
-
-
-def evaluate(model, eval_loader, accelerator):
-    model.eval()
-    losses = []
-    for step, batch in enumerate(eval_loader):
-        with torch.no_grad():
-            outputs = model(**batch)
-
-        loss = outputs.loss
-        losses.append(accelerator.gather_for_metrics(loss.repeat(per_device_train_batch_size*2)))
-
-    losses = torch.cat(losses)
-    try:
-        eval_loss = torch.mean(losses)
-        perplexity = math.exp(eval_loss)
-    except OverflowError:
-        perplexity = float("inf")
-    return perplexity, eval_loss
-
-# get eval results
-eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
