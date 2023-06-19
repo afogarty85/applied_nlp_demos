@@ -177,17 +177,36 @@ for epoch in range(1, num_train_epochs + 1):
             completed_steps += 1
             if completed_steps % logging_steps == 0:
                 # report current findings
-                try:
-                    curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
-                    curr_perplexity = math.exp(curr_loss)
-                    print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
-                    # reset
-                    total_loss = 0
-                except OverflowError:
-                    perplexity = float("inf")
+                curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
+                curr_perplexity = np.exp(curr_loss)
+                print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
+                # reset
+                total_loss = 0
 
       # report timings
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
+
+
+def evaluate(model, eval_loader, accelerator):
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_loader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        loss = outputs.loss
+        losses.append(accelerator.gather_for_metrics(loss.repeat(per_device_train_batch_size*2)))
+
+    losses = torch.cat(losses)
+    try:
+        eval_loss = torch.mean(losses)
+        perplexity = np.exp(curr_loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return perplexity, eval_loss
+
+# get eval results
+eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
