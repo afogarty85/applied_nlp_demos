@@ -145,7 +145,7 @@ completed_steps = 0
 best_metric = 0
 best_metric_checkpoint = None
 num_train_epochs = 1
-logging_steps = 100
+logging_steps = 5
 
 # train loop
 for epoch in range(1, num_train_epochs + 1):
@@ -176,21 +176,19 @@ for epoch in range(1, num_train_epochs + 1):
         if accelerator.sync_gradients:
             progress_bar.update(1)
             completed_steps += 1
-
-        if accelerator.sync_gradients:
-            # report current findings
-            curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
-            curr_perplexity = math.exp(curr_loss)
-            print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
-            # reset
-            total_loss = 0
+            if completed_steps % logging_steps == 0:
+                # report current findings
+                curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
+                curr_perplexity = math.exp(curr_loss)
+                print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
+                # reset
+                total_loss = 0
 
       # report timings
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
-
 
 
 def evaluate(model, eval_loader, accelerator):
