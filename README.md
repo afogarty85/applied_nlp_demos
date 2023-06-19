@@ -5,6 +5,8 @@
 
 1. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
 
+2. Pretrain T5 v1.1: Pre-Train T5 on C4 Dataset [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_pretrain_t5_base_mlm.py)
+
 
 ## Sample Results
 
