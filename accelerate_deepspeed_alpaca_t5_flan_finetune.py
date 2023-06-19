@@ -586,8 +586,9 @@ def main():
                                    total_limit=5,)
     
     # init accelerator
+    gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=args.gradient_accumulation_steps, adjust_scheduler=True)
     accelerator = Accelerator(mixed_precision=args.mixed_precision,
-                              gradient_accumulation_steps=args.gradient_accumulation_steps,
+                              gradient_accumulation_plugin=gradient_accumulation_plugin,
                               project_config=my_proj,
                               device_placement=True,
                                )
@@ -718,11 +719,8 @@ def main():
 
                 # update
                 optimizer.step()
-                if not accelerator.optimizer_step_was_skipped:
-                    lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
             # checkpoint
             if isinstance(checkpointing_steps, int):
@@ -730,14 +728,18 @@ def main():
                     os.makedirs(args.output_dir + '/checkpoints', exist_ok=True)
                     accelerator.save_state()
 
-            # report data so far
-            if isinstance(args.logging_steps, int):
+            # check if update happened
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                completed_steps += 1
                 if completed_steps % args.logging_steps == 0:
-                    steps_this_epoch = completed_steps % len(train_loader)
-                    train_loss = total_loss.item() / steps_this_epoch
-                    train_perplexity = math.exp(train_loss)
+                    # report current findings
+                    curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
+                    curr_perplexity = math.exp(curr_loss)
                     # report
                     print(f"Epoch: { round(( completed_steps / (num_update_steps_per_epoch * args.gradient_accumulation_steps) ), 3) }, Step: {completed_steps}, Steps This Epoch: {steps_this_epoch}, Loss: {round(train_loss, 3)}, Perplexity: {round(train_perplexity, 3)}")
+                    # reset
+                    total_loss = 0
 
             if completed_steps >= args.max_train_steps:
                 break
