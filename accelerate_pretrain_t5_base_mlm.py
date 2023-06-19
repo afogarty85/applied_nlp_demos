@@ -106,7 +106,6 @@ data_collator = DataCollatorForT5MLM(tokenizer=tokenizer,
 train_loader = torch.utils.data.DataLoader(tokenized_datasets['train'],
                                             batch_size=per_device_train_batch_size,
                                             drop_last=True,
-                                            #shuffle=True,
                                             num_workers=8,
                                             collate_fn=data_collator,
                                             pin_memory=True)
@@ -178,14 +177,39 @@ for epoch in range(1, num_train_epochs + 1):
             completed_steps += 1
             if completed_steps % logging_steps == 0:
                 # report current findings
-                curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
-                curr_perplexity = math.exp(curr_loss)
-                print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
-                # reset
-                total_loss = 0
-
+                try:
+                    curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
+                    curr_perplexity = math.exp(curr_loss)
+                    print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
+                    # reset
+                    total_loss = 0
+                except OverflowError:
+                    perplexity = float("inf")
+                    
       # report timings
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
+
+
+def evaluate(model, eval_loader, accelerator):
+    model.eval()
+    losses = []
+    for step, batch in enumerate(eval_loader):
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        loss = outputs.loss
+        losses.append(accelerator.gather_for_metrics(loss.repeat(per_device_train_batch_size*2)))
+
+    losses = torch.cat(losses)
+    try:
+        eval_loss = torch.mean(losses)
+        perplexity = math.exp(eval_loss)
+    except OverflowError:
+        perplexity = float("inf")
+    return perplexity, eval_loss
+
+# get eval results
+eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
