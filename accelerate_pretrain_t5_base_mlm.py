@@ -144,7 +144,7 @@ completed_steps = 0
 best_metric = 0
 best_metric_checkpoint = None
 num_train_epochs = 1
-logging_steps = 50
+logging_steps = 5
 
 # train loop
 for epoch in range(1, num_train_epochs + 1):
@@ -185,31 +185,9 @@ for epoch in range(1, num_train_epochs + 1):
                     total_loss = 0
                 except OverflowError:
                     perplexity = float("inf")
-                    
+
       # report timings
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
-
-
-def evaluate(model, eval_loader, accelerator):
-    model.eval()
-    losses = []
-    for step, batch in enumerate(eval_loader):
-        with torch.no_grad():
-            outputs = model(**batch)
-
-        loss = outputs.loss
-        losses.append(accelerator.gather_for_metrics(loss.repeat(per_device_train_batch_size*2)))
-
-    losses = torch.cat(losses)
-    try:
-        eval_loss = torch.mean(losses)
-        perplexity = math.exp(eval_loss)
-    except OverflowError:
-        perplexity = float("inf")
-    return perplexity, eval_loss
-
-# get eval results
-eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
