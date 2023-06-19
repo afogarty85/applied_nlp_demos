@@ -117,10 +117,9 @@ eval_loader = torch.utils.data.DataLoader(tokenized_datasets['validation'],
                                             pin_memory=True)
 
 # optimizer
-optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=0.01)
+optimizer = Adafactor(model.parameters(), scale_parameter=True, relative_step=False, warmup_init=False, lr=0.01)
 
 # scheduler
-lr_scheduler = get_inverse_sqrt_schedule(optimizer=optimizer, num_warmup_steps=10000)
 lr_scheduler = LambdaLR(optimizer, lambda step: min(1e-2, 1.0 / math.sqrt(step)) / 0.01 if step else 1e-2 / 0.01)
 
 # accelerate
@@ -146,6 +145,7 @@ best_metric = 0
 best_metric_checkpoint = None
 num_train_epochs = 1
 logging_steps = 5
+loss_results = []
 
 # train loop
 for epoch in range(1, num_train_epochs + 1):
@@ -179,6 +179,7 @@ for epoch in range(1, num_train_epochs + 1):
             # report current findings
             curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
             curr_perplexity = np.exp(curr_loss)
+            loss_results.append(curr_loss)
             print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
             # reset
             total_loss = 0
@@ -188,7 +189,6 @@ for epoch in range(1, num_train_epochs + 1):
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
-
 
 
 def evaluate(model, eval_loader, accelerator):
