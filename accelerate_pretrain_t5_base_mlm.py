@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoConfig, T5ForConditionalGeneration
-from transformers.optimization import Adafactor
+from transformers.optimization import Adafactor, get_inverse_sqrt_schedule
 from accelerate import Accelerator
 from accelerate.utils import GradientAccumulationPlugin
 from torch.optim.lr_scheduler import LambdaLR
@@ -120,7 +120,8 @@ eval_loader = torch.utils.data.DataLoader(tokenized_datasets['validation'],
 optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=0.01)
 
 # scheduler
-lr_scheduler = LambdaLR(optimizer, lambda step: min(1e-2, 1.0 / math.sqrt(step) ) / 0.01 if step else 1e-2 / 0.01)
+#lr_scheduler = LambdaLR(optimizer, lambda step: min(1e-2, 1.0 / math.sqrt(step) ) / 0.01 if step else 1e-2 / 0.01)
+lr_scheduler = get_inverse_sqrt_schedule(optimizer=optimizer, num_warmup_steps=10000)
 
 # accelerate
 gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=gradient_accumulation_steps, adjust_scheduler=True)
@@ -189,6 +190,8 @@ for epoch in range(1, num_train_epochs + 1):
     accelerator.wait_for_everyone()
     accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
 
+# loss to nan at 4885
+lr_scheduler.get_last_lr() # 0.005263814089748883
 
 def evaluate(model, eval_loader, accelerator):
     model.eval()
