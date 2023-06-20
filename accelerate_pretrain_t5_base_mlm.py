@@ -184,6 +184,10 @@ for epoch in range(1, num_train_epochs + 1):
             # reset
             total_loss = 0
 
+        # end at first stage
+        if completed_steps >= max_train_steps:
+            break
+
       # report timings
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")

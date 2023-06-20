@@ -3,12 +3,12 @@
 
 # Modern NLP
 
-1. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
+1. Pretrain T5 v1.1: Pre-Train T5 on C4 Dataset [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_pretrain_t5_base_mlm.py). This code is exceedingly less complicated, more readable, and truer to Google's implementation, than other available options thanks to HuggingFace. In comparison to the [T5 1.1 paper](https://arxiv.org/pdf/2002.05202.pdf) which reports 1.942 loss at 65,536 steps, a single RTX 4090 produces comparable results on the test set (2.08) in roughly 18.5 hours of training using this code (see image below). Pretraining on your own data set is as simple as swapping out the existing `Dataset` with your own.
 
-2. Pretrain T5 v1.1: Pre-Train T5 on C4 Dataset [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_pretrain_t5_base_mlm.py)
+![T5 Pretraining Loss](./images/pretrain_loss.png)
 
+2. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
 
-## Sample Results
 
 ### google/flan-t5-large
 
@@ -32,7 +32,7 @@ input sentence: Name two types of desert biomes.
 response: sahara
 ```
 
-### Fine-tuned on Alpaca
+### google/flan-t5-large: Fine-tuned on Alpaca
 
 ```
 input sentence: Given a set of numbers, find the maximum value.
