@@ -24,7 +24,7 @@ torch.manual_seed(0)
 # Finetuning LR: constant 0.001
 
 # load c4
-dataset = datasets.load_from('c4', 'en', streaming=True,).remove_columns(['timestamp', 'url'])
+dataset = datasets.load_dataset('c4', 'en', streaming=True,).remove_columns(['timestamp', 'url'])
 
 # init tokenizer
 tokenizer = AutoTokenizer.from_pretrained('google/t5-v1_1-base', use_fast=False)
@@ -135,9 +135,6 @@ model, optimizer, train_loader, eval_loader, lr_scheduler = accelerator.prepare(
 # set scheduler to save
 accelerator.register_for_checkpointing(lr_scheduler)
 
-# load checkpoint
-#accelerator.load_state(f'./model_checkpoint/epoch_1')
-
 # train fn
 progress_bar = tqdm(range(max_train_steps), disable=not accelerator.is_local_main_process)
 completed_steps = 0
@@ -153,6 +150,9 @@ for epoch in range(1, num_train_epochs + 1):
     start_time = time()
     model.train()
     total_loss = 0
+
+    # set epoch on data set
+    tokenized_datasets.set_epoch(epoch)
 
     for step, batch in enumerate(train_loader):
 
@@ -217,4 +217,3 @@ def evaluate(model, eval_loader, accelerator):
 
 # get eval results
 eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
-
