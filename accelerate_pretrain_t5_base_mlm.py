@@ -24,7 +24,7 @@ torch.manual_seed(0)
 # Finetuning LR: constant 0.001
 
 # load c4
-dataset = datasets.load_dataset('c4', 'en', streaming=True,).remove_columns(['timestamp', 'url'])
+dataset = datasets.load_from('c4', 'en', streaming=True,).remove_columns(['timestamp', 'url'])
 
 # init tokenizer
 tokenizer = AutoTokenizer.from_pretrained('google/t5-v1_1-base', use_fast=False)
@@ -192,7 +192,9 @@ for epoch in range(1, num_train_epochs + 1):
     end_time = time()
     print(f"Epoch {epoch} training took {int(end_time-start_time)} seconds")
     accelerator.wait_for_everyone()
-    accelerator.save_state(f'./model_checkpoint_c4/step_{step}')
+    accelerator.save_state(f'./model_checkpoint_c4/step_{completed_steps}')
+    # save config
+    model.config.to_json_file(f'./model_checkpoint_c4/step_{completed_steps}/config.json')
 
 
 def evaluate(model, eval_loader, accelerator):
@@ -215,3 +217,4 @@ def evaluate(model, eval_loader, accelerator):
 
 # get eval results
 eval_perplexity, eval_loss = evaluate(model=model, eval_loader=eval_loader, accelerator=accelerator)
+
