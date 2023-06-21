@@ -140,8 +140,8 @@ progress_bar = tqdm(range(max_train_steps), disable=not accelerator.is_local_mai
 completed_steps = 0
 best_metric = 0
 best_metric_checkpoint = None
-num_train_epochs = 1
-logging_steps = 5
+logging_steps = 25
+last_logged_step = 0
 loss_results = []
 
 # train loop
@@ -176,13 +176,16 @@ for epoch in range(1, num_train_epochs + 1):
         if accelerator.sync_gradients:
             progress_bar.update(1)
             completed_steps += 1
-            # report current findings
-            curr_loss = (total_loss / accelerator.gradient_accumulation_steps).item()
-            curr_perplexity = np.exp(curr_loss)
-            loss_results.append(curr_loss)
-            print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
-            # reset
-            total_loss = 0
+
+            if completed_steps % logging_steps == 0:
+                # report current findings
+                curr_loss = round(total_loss.item() / (completed_steps - last_logged_step), 3)
+                curr_perplexity = np.exp(curr_loss)
+                loss_results.append(curr_loss)
+                print(f"Step: {completed_steps},  Loss: {round(curr_loss, 3)}, Perplexity: {round(curr_perplexity, 3)}")
+                # reset
+                total_loss = 0
+                last_logged_step = completed_steps
 
         # end at first stage
         if completed_steps >= max_train_steps:
