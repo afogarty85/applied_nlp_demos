@@ -117,10 +117,10 @@ eval_loader = torch.utils.data.DataLoader(tokenized_datasets['validation'],
                                             pin_memory=True)
 
 # optimizer
-optimizer = Adafactor(model.parameters(), scale_parameter=True, relative_step=False, warmup_init=False, lr=0.01)
+optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=0.01)
 
 # scheduler
-lr_scheduler = LambdaLR(optimizer, lambda step: min(1e-2, 1.0 / math.sqrt(step)) / 0.01 if step else 1e-2 / 0.01)
+lr_scheduler = get_scheduler(name='constant', optimizer=optimizer)
 
 # accelerate
 gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=gradient_accumulation_steps, adjust_scheduler=True)
