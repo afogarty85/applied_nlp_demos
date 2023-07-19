@@ -10,7 +10,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from transformers.optimization import Adafactor, get_scheduler, SchedulerType
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import ProjectConfiguration, GradientAccumulationPlugin
 from time import time
 from tqdm.auto import tqdm
 from argparse import ArgumentParser, BooleanOptionalAction
@@ -298,8 +298,9 @@ def main():
                                    total_limit=5,)
     
     # init accelerator
+    gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=args.gradient_accumulation_steps, adjust_scheduler=True)
     accelerator = Accelerator(mixed_precision=args.mixed_precision,
-                              gradient_accumulation_steps=args.gradient_accumulation_steps,
+                              gradient_accumulation_plugin=gradient_accumulation_plugin,
                               project_config=my_proj,
                               device_placement=True,
                                )
