@@ -9,6 +9,8 @@
 
 2. Seq2Seq (ChatBot): Fine Tune Flan-T5 on Alpaca [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_alpaca_t5_flan_finetune.py)
 
+3. Seq2Seq: Fine Tune Flan-T5 on Data Using HuggingFace Dataset Framework [Code](https://github.com/afogarty85/applied_nlp_demos/blob/master/accelerate_deepspeed_t5_flan_hfdata.py)
+
 
 ### google/flan-t5-large
 
