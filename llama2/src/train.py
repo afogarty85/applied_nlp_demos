@@ -40,14 +40,12 @@ import ray.util.scheduling_strategies
 from ray.train.torch import TorchTrainer
 from ray.train import Checkpoint
 from azureml.core import Workspace, Dataset, Datastore
+torch.backends.cuda.matmul.allow_tf32 = True
+
 
 # init Azure ML run context data
 aml_context = Run.get_context()
 
-# load pickle
-with open(aml_context.input_datasets['train_files'] + '/embed_mean_7b_tensor.pickle', 'rb') as handle:
-    embed_mean = pickle.load(handle)
-    print('loaded embed mean', embed_mean.shape)
 
 OPTIM_BETAS = (0.9, 0.999)
 OPTIM_EPS = 1e-8
@@ -187,7 +185,7 @@ def training_function(kwargs: dict):
         add_eos_token=False,
         add_bos_token=False,
         use_fast=False,
-        token='')
+        token='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')
     tokenizer.pad_token = tokenizer.eos_token
 
 
@@ -204,8 +202,10 @@ def training_function(kwargs: dict):
         device=accelerator.device,
     )
 
-    from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
-    replace_llama_attn_with_flash_attn()
+    if args.use_flash:
+
+        from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+        replace_llama_attn_with_flash_attn()
 
     s = time.time()
     print("Locking...")
@@ -213,8 +213,8 @@ def training_function(kwargs: dict):
     with FileLock(lock_file):
         model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        use_flash_attention_2=True,
-        token='',
+        use_flash_attention_2=True if args.use_flash else False,
+        token='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',
         torch_dtype=torch.bfloat16,
         )
 
@@ -222,17 +222,6 @@ def training_function(kwargs: dict):
                 
         print('Resizing tokens...')
         model.resize_token_embeddings(len(tokenizer))
-
-        print(f"Resize shape: {model.model.embed_tokens.weight.data.shape}")
-
-        # assign to new tokens
-        model.model.embed_tokens.weight.data[32000:, :] = embed_mean.cuda()
-
-        # checks
-        print('Model Tensors', model.model.embed_tokens.weight[32002, :][0:10])
-        print('Embed Tensors', embed_mean[0:10])
-
-        assert all(model.model.embed_tokens.weight[32002, :] == embed_mean.cuda()), 'failed applying mean'
 
 
     print(f"Using this model name: {model.name_or_path}")
@@ -263,7 +252,7 @@ def training_function(kwargs: dict):
     # else, creates `args.lr_scheduler_type` Scheduler
     # get train and valid dataset lengths
 
-    num_warmup_steps = int(0.06 * (train_ds_len // args.batch_size_per_device) * num_epochs)
+    num_warmup_steps = int(0.03 * (train_ds_len // args.batch_size_per_device) * num_epochs)
 
     if (
         accelerator.state.deepspeed_plugin is None
@@ -278,14 +267,6 @@ def training_function(kwargs: dict):
             ),
                                  )
         
-        # override
-        lr_scheduler = get_scheduler(name='linear',
-                                 optimizer=optimizer,
-                                 num_warmup_steps=num_warmup_steps,
-                                 num_training_steps=(
-                (train_ds_len * num_epochs) // gradient_accumulation_steps
-            ),
-                                 )
     else:
         lr_scheduler = DummyScheduler(
             optimizer,
@@ -417,72 +398,76 @@ def training_function(kwargs: dict):
             "learning_rate": lr_scheduler.get_lr()[0],
         }
 
-        with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-            accelerator.print(f"Saving the model locally at {temp_checkpoint_dir}")
-            accelerator.wait_for_everyone()
+        # temp only save last
+        if epoch == 1:
 
-            checkpoint_save_start = time.perf_counter()
 
-            if accelerator.is_main_process:
-                print("Saving tokenizer and config.")
-                tokenizer.save_pretrained(temp_checkpoint_dir)
+            with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+                accelerator.print(f"Saving the model locally at {temp_checkpoint_dir}")
+                accelerator.wait_for_everyone()
 
-            accelerator.wait_for_everyone()
+                checkpoint_save_start = time.perf_counter()
 
-            # Checkpointing strategy 1: Distributed checkpointing
-            # This checkpointing method makes deepspeed checkpoints on each node
-            # and then Ray Train will aggregate them to a central s3 bucket.
-            # It should be done on all processes (not just the Rank 0)
-            # aggregate_on_rank_0 = False
-            # checkpoint_model(
-            #     checkpoint_folder=tempdir,
-            #     ckpt_id=epoch,
-            #     model=model,
-            #     epoch=epoch,
-            #     last_global_step=step
-            # )
+                if accelerator.is_main_process:
+                    print("Saving tokenizer and config.")
+                    tokenizer.save_pretrained(temp_checkpoint_dir)
 
-            # Checkpointing strategy 2: Aggregate model on the rank 0 worker then upload
-            aggregate_on_rank_0 = True
-            unwrapped_model = accelerator.unwrap_model(model)
-            unwrapped_model.save_pretrained(
-                temp_checkpoint_dir,
-                is_main_process=accelerator.is_main_process,
-                save_function=accelerator.save,
-                safe_serialization=True,
-                state_dict=accelerator.get_state_dict(model),
-            )
-            accelerator.wait_for_everyone()
-            print("Checkpoint save time: ", time.perf_counter() - checkpoint_save_start)
+                accelerator.wait_for_everyone()
 
-            checkpoint_upload_start = time.perf_counter()
+                # Checkpointing strategy 1: Distributed checkpointing
+                # This checkpointing method makes deepspeed checkpoints on each node
+                # and then Ray Train will aggregate them to a central s3 bucket.
+                # It should be done on all processes (not just the Rank 0)
+                # aggregate_on_rank_0 = False
+                # checkpoint_model(
+                #     checkpoint_folder=tempdir,
+                #     ckpt_id=epoch,
+                #     model=model,
+                #     epoch=epoch,
+                #     last_global_step=step
+                # )
 
-            # Create the checkpoint object to report to Ray Train and upload to storage.
-            # If we aggregated the model on rank 0, we only need to report
-            # the checkpoint from the rank 0 worker, since all other checkpoint
-            # directories are empty (`save_pretrained` was a noop for other workers).
-            if aggregate_on_rank_0:
-                checkpoint = (
-                    Checkpoint.from_directory(temp_checkpoint_dir)
-                    if accelerator.is_main_process
-                    else None
+                # Checkpointing strategy 2: Aggregate model on the rank 0 worker then upload
+                aggregate_on_rank_0 = True
+                unwrapped_model = accelerator.unwrap_model(model)
+                unwrapped_model.save_pretrained(
+                    temp_checkpoint_dir,
+                    is_main_process=accelerator.is_main_process,
+                    save_function=accelerator.save,
+                    safe_serialization=True,
+                    state_dict=accelerator.get_state_dict(model),
                 )
-            else:
-                # Distributed checkpointing should upload shards from each worker.
-                checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+                accelerator.wait_for_everyone()
+                print("Checkpoint save time: ", time.perf_counter() - checkpoint_save_start)
 
-            # Note: After `train.report`, in the case of remote storage,
-            # the checkpoint directory will be uploaded to the remote storage.
-            train.report(metrics, checkpoint=checkpoint)
+                checkpoint_upload_start = time.perf_counter()
 
-            print(
-                "Checkpoint upload time: ",
-                time.perf_counter() - checkpoint_upload_start,
-            )
-            print(
-                "Total checkpointing time: ",
-                time.perf_counter() - checkpoint_save_start,
-            )
+                # Create the checkpoint object to report to Ray Train and upload to storage.
+                # If we aggregated the model on rank 0, we only need to report
+                # the checkpoint from the rank 0 worker, since all other checkpoint
+                # directories are empty (`save_pretrained` was a noop for other workers).
+                if aggregate_on_rank_0:
+                    checkpoint = (
+                        Checkpoint.from_directory(temp_checkpoint_dir)
+                        if accelerator.is_main_process
+                        else None
+                    )
+                else:
+                    # Distributed checkpointing should upload shards from each worker.
+                    checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+
+                # Note: After `train.report`, in the case of remote storage,
+                # the checkpoint directory will be uploaded to the remote storage.
+                train.report(metrics, checkpoint=checkpoint)
+
+                print(
+                    "Checkpoint upload time: ",
+                    time.perf_counter() - checkpoint_upload_start,
+                )
+                print(
+                    "Total checkpointing time: ",
+                    time.perf_counter() - checkpoint_save_start,
+                )
 
 
 def parse_args():
@@ -511,6 +496,11 @@ def parse_args():
         default=64,
         help="Batch size to use per device (For evaluation).",
     )
+    parser.add_argument(
+        "--as-test",
+        action="store_true",
+        help="If passed, will run the script in test mode.",
+    )
 
     parser.add_argument(
         "--num-devices", type=int, default=4, help="Number of devices to use."
@@ -529,8 +519,10 @@ def parse_args():
         help="If passed, will not use gradient checkpointing.",
     )
     parser.add_argument("--use_instruct", default=False, type=lambda x: (str(x).lower() == 'true'), help="If added, use instruct parsing", )
+    parser.add_argument("--use_flash", default=False, type=lambda x: (str(x).lower() == 'true'), help="If True, use flash attention 2", )
     parser.add_argument("--output_dir", type=str, help="Path to output directory.")
     parser.add_argument("--model_name", default="meta-llama/Llama-2-7b-chat-hf", type=str)
+    parser.add_argument("--lr_scheduler_type", default="cosine", type=str)
     parser.add_argument("--num-epochs", type=int, default=1, help="Number of epochs to train for." )
     parser.add_argument(
         "--num-checkpoints-to-keep",
@@ -543,21 +535,8 @@ def parse_args():
         default=None,
     )
     parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate to use.")
-
     parser.add_argument("--ctx-len", type=int, default=512, help="Token length.")
-
-    parser.add_argument(
-        "--as-test",
-        action="store_true",
-        help="If passed, will run the script in test mode.",
-    )
-
-    parser.add_argument(
-        "--ds-config",
-        type=str,
-        default="./zero_3_llama_2_7b.json",
-        help="Deepspeed config json to use.",
-    )
+    parser.add_argument("--ds-config", type=str, default="./zero_3_llama_2_7b.json", help="Deepspeed config json to use.",)
     args = parser.parse_args()
 
     return args
