@@ -204,15 +204,19 @@ def training_function(kwargs: dict):
         device=accelerator.device,
     )
 
+    from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+    replace_llama_attn_with_flash_attn()
+
     s = time.time()
-    # print("Locking...")
-    # lock_file = str(f'{model_id.replace("/",  "--")}.lock')
-    # with FileLock(lock_file):
-    model = AutoModelForCausalLM.from_pretrained(
-    args.model_name,
-    token='',
-    torch_dtype=torch.bfloat16,
-    )
+    print("Locking...")
+    lock_file = str(f'{model_id.replace("/",  "--")}.lock')
+    with FileLock(lock_file):
+        model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        use_flash_attention_2=True,
+        token='',
+        torch_dtype=torch.bfloat16,
+        )
 
     if not args.use_instruct:
                 
@@ -525,11 +529,6 @@ def parse_args():
         help="If passed, will not use gradient checkpointing.",
     )
     parser.add_argument("--use_instruct", default=False, type=lambda x: (str(x).lower() == 'true'), help="If added, use instruct parsing", )
-    parser.add_argument(
-        "--no-adafactor",
-        action="store_true",
-        help="If passed, will not use adafactor",
-    )
     parser.add_argument("--output_dir", type=str, help="Path to output directory.")
     parser.add_argument("--model_name", default="meta-llama/Llama-2-7b-chat-hf", type=str)
     parser.add_argument("--num-epochs", type=int, default=1, help="Number of epochs to train for." )

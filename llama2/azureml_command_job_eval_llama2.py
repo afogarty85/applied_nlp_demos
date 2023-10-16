@@ -80,12 +80,14 @@ outputs={
     ),
 }
 
+num_devices = 8
+
 accelerate_cmd = (f"""python eval.py  \
-        --num-devices 4 \
-        --ctx-len 275 \
-        --batch-size 64 \
-        --use_instruct False \
-        --test_path test_noinstruct.jsonl \
+        --num_devices {num_devices} \
+        --ctx-len 1186 \
+        --batch-size 12 \
+        --use_instruct True \
+        --test_path test_newinstruct_oos.jsonl \
         --experiment-name {display_name}
         """)
 
@@ -103,7 +105,7 @@ command_job = command(
     code="./src",
     command=accelerate_cmd,
     environment=env,
-    instance_count=4,
+    instance_count=num_devices,
     distribution={
         "type": "Ray",
         "include_dashboard": True,

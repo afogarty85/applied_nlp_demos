@@ -26,7 +26,7 @@ aml_context = Run.get_context()
 def parse_args():
 
     parser = argparse.ArgumentParser(description="Simple example of eval script.")
-    parser.add_argument("--num-devices", type=int, default=4, help="Number of devices to use.")
+    parser.add_argument("--num_devices", type=int, default=4, help="Number of devices to use.")
     parser.add_argument("--ctx-len", type=int, default=512, help="Token length." )
     parser.add_argument("--experiment-name", type=str, default='_', help="Experiment name." )
     parser.add_argument("--batch-size", type=int, default=12, help="Batch size" )
@@ -117,6 +117,9 @@ if __name__ == "__main__":
     print(f"Ray version: {ray.__version__}")
     
     args = parse_args()
+    
+    if args.use_instruct:
+        print("Using instruct-style parsing")
 
     if not ray.is_initialized():
         # init a driver
@@ -181,7 +184,7 @@ if __name__ == "__main__":
     test_ds_tokenized = test_ds_tokenized.repartition(96)
 
     # get preds
-    predictions = test_ds_tokenized.map_batches(TorchPredictor(args=args, model=model), num_gpus=1, batch_size=args.batch_size, compute=ray.data.ActorPoolStrategy(size=4))
+    predictions = test_ds_tokenized.map_batches(TorchPredictor(args=args, model=model), num_gpus=1, batch_size=args.batch_size, compute=ray.data.ActorPoolStrategy(size=args.num_devices))
     print('preds generated!')
 
     # to pandas
